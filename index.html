@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>형광펜 — 이미지 글자에 칠하기</title>
+  <meta name="description" content="스크린샷 속 글자를 찾아 형광펜을 칠하거나, 글을 종이에 옮겨 적고 칠하는 브라우저 도구. 사진은 기기 밖으로 나가지 않아요.">
+  <meta name="theme-color" content="#EFEBE2">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Do+Hyeon&family=Gowun+Batang:wght@400;700&family=Gowun+Dodum&display=swap">
+  <link rel="stylesheet" href="styles.css?v=20261001-3">
+  <script src="ink.js?v=20261001-2" defer></script>
+  <script src="app.js?v=20261001-2" defer></script>
+</head>
+<body data-mode="image">
+  <header class="topbar">
+    <div class="brand">
+      <span class="wordmark"><span class="swipe" aria-hidden="true"></span><span>형광펜</span></span>
+      <span class="tagline" id="tagline">이미지 글자에 칠하기</span>
+    </div>
+    <div class="mode-switch" role="group" aria-label="모드">
+      <button type="button" data-mode="image" aria-pressed="true">이미지에 칠하기</button>
+      <button type="button" data-mode="text" aria-pressed="false">글로 다시 쓰기</button>
+    </div>
+    <div class="top-actions">
+      <button type="button" class="btn ghost image-only" id="originalBtn" disabled>원본 보기</button>
+      <button type="button" class="btn ghost" id="copyBtn" disabled>복사</button>
+      <button type="button" class="btn solid" id="saveBtn" disabled>PNG 저장</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="stage" id="stage" aria-label="작업 화면">
+      <div class="hint-chip" id="hintChip" role="status" aria-live="polite" hidden>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M3 13l2-5 6-6 3 3-6 6z"/><path d="M3 13h4"/></svg>
+        <span id="hintText"></span>
+      </div>
+
+      <div class="image-view" id="imageView">
+        <div class="dropzone" id="dropzone">
+          <div class="drop-card">
+            <p class="drop-title">칠할 이미지를 가져와요</p>
+            <p class="drop-sub">스크린샷, 캡처, 문서 사진 모두 돼요</p>
+            <button type="button" class="btn solid" id="pickBtn">이미지 고르기</button>
+            <p class="drop-note">끌어다 놓거나 <kbd>Ctrl</kbd>+<kbd>V</kbd>로 붙여 넣어도 돼요</p>
+          </div>
+          <input type="file" id="fileInput" accept="image/*" hidden>
+        </div>
+        <div class="sheet" id="sheet" hidden>
+          <canvas id="canvas" aria-label="형광펜을 칠할 이미지"></canvas>
+        </div>
+      </div>
+
+      <div class="text-view" id="textView" hidden>
+        <div class="compose" id="compose">
+          <label class="compose-label" for="textInput">칠할 글</label>
+          <textarea id="textInput" rows="12" placeholder="여기에 글을 붙여 넣어요. 빈 줄로 문단을 나눌 수 있어요."></textarea>
+          <div class="compose-actions">
+            <button type="button" class="btn ghost" id="ocrBtn">이미지에서 글 가져오기</button>
+            <input type="file" id="ocrFile" accept="image/*" hidden>
+            <button type="button" class="btn solid" id="typesetBtn">종이에 옮기기</button>
+          </div>
+          <p class="ocr-status" id="ocrStatus" aria-live="polite"></p>
+        </div>
+        <div class="page-wrap" id="pageWrap" hidden>
+          <div class="page" id="page" data-theme="paper" data-font="batang" data-size="m">
+            <canvas class="page-marks" id="pageCanvas" aria-hidden="true"></canvas>
+            <div class="page-text" id="pageText"></div>
+          </div>
+          <button type="button" class="btn ghost small" id="editTextBtn">글 고치기</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="settings" aria-label="형광펜 설정">
+      <div class="field">
+        <span class="field-title">칠하는 단위</span>
+        <div class="seg" role="group" aria-label="칠하는 단위">
+          <button type="button" data-unit="glyph" aria-pressed="true">글자</button>
+          <button type="button" data-unit="word" aria-pressed="false">단어</button>
+          <button type="button" data-unit="line" aria-pressed="false"><span class="image-only">줄</span><span class="text-only">문장</span></button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-head"><label class="field-title" for="thickness">굵기</label><span id="thicknessLabel">보통</span></div>
+        <input type="range" id="thickness" min="0" max="2" step="1" value="1">
+      </div>
+      <div class="field">
+        <div class="field-head"><label class="field-title" for="alpha">농도</label><span id="alphaLabel">45%</span></div>
+        <input type="range" id="alpha" min="20" max="80" step="1" value="45">
+      </div>
+      <div class="field">
+        <span class="field-title">끝 모양</span>
+        <div class="seg" role="group" aria-label="끝 모양">
+          <button type="button" data-shape="round" aria-pressed="true">둥글게</button>
+          <button type="button" data-shape="square" aria-pressed="false">반듯하게</button>
+          <button type="button" data-shape="hand" aria-pressed="false">손으로</button>
+        </div>
+      </div>
+      <div class="field text-only">
+        <span class="field-title">종이</span>
+        <div class="seg" role="group" aria-label="종이 색">
+          <button type="button" data-theme="paper" aria-pressed="true">미색</button>
+          <button type="button" data-theme="white" aria-pressed="false">하양</button>
+          <button type="button" data-theme="night" aria-pressed="false">밤</button>
+        </div>
+        <div class="seg" role="group" aria-label="글꼴">
+          <button type="button" data-font="batang" aria-pressed="true">바탕</button>
+          <button type="button" data-font="dodum" aria-pressed="false">돋움</button>
+          <button type="button" data-font="system" aria-pressed="false">기본</button>
+        </div>
+        <div class="seg" role="group" aria-label="글자 크기">
+          <button type="button" data-size="s" aria-pressed="false">작게</button>
+          <button type="button" data-size="m" aria-pressed="true">보통</button>
+          <button type="button" data-size="l" aria-pressed="false">크게</button>
+        </div>
+      </div>
+      <div class="tool-row">
+        <button type="button" class="btn dashed" id="eraserBtn" aria-pressed="false">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 13l-3-3 7-7 3 3-7 7z"/><path d="M6 13h7"/></svg>
+          지우개
+        </button>
+        <button type="button" class="btn dashed" id="undoBtn" disabled>되돌리기</button>
+      </div>
+      <div class="settings-foot">
+        <span>사진은 기기 밖으로 나가지 않아요</span>
+        <button type="button" class="info" id="infoBtn" aria-label="어떻게 동작하는지 보기">i</button>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="tray" aria-label="필통">
+    <span class="tray-label">필통</span>
+    <div class="pens" id="pens" role="group" aria-label="형광펜 색">
+      <button type="button" class="pen" data-color="#FFE24A" aria-pressed="true" aria-label="01 레몬"><span class="tip"></span><span class="grip"></span><span class="body"><span class="stripe"></span>01 레몬</span></button>
+      <button type="button" class="pen" data-color="#FF8FC7" aria-pressed="false" aria-label="02 체리"><span class="tip"></span><span class="grip"></span><span class="body"><span class="stripe"></span>02 체리</span></button>
+      <button type="button" class="pen" data-color="#78E6BE" aria-pressed="false" aria-label="03 민트"><span class="tip"></span><span class="grip"></span><span class="body"><span class="stripe"></span>03 민트</span></button>
+      <button type="button" class="pen" data-color="#82D7FF" aria-pressed="false" aria-label="04 소다"><span class="tip"></span><span class="grip"></span><span class="body"><span class="stripe"></span>04 소다</span></button>
+      <button type="button" class="pen" data-color="#C9A2FF" aria-pressed="false" aria-label="05 라벤더"><span class="tip"></span><span class="grip"></span><span class="body"><span class="stripe"></span>05 라벤더</span></button>
+      <button type="button" class="pen custom" id="customPen" data-color="" aria-pressed="false" aria-label="06 내 색" hidden><span class="tip"></span><span class="grip"></span><span class="body"><span class="stripe"></span>06 내 색</span></button>
+      <button type="button" class="btn dashed make-color" id="makeColorBtn">+ 내 색 만들기</button>
+      <input type="color" id="colorInput" value="#FFB25C" hidden>
+    </div>
+  </footer>
+
+  <dialog class="info-dialog" id="infoDialog" aria-labelledby="infoTitle">
+    <form method="dialog">
+      <h2 id="infoTitle">형광펜은 이렇게 동작해요</h2>
+      <h3>이미지에 칠하기</h3>
+      <p>스크린샷을 그대로 두고 그 위에 칠해요. 글자를 읽지 않고, 배경과 다른 가는 획이 모인 자리를 찾아 글줄·단어·글자 위치를 알아내요. 그래서 한국어·영어·말풍선 속 흰 글자까지 빠르게 잡혀요.</p>
+      <p>조명이 고르지 않은 사진처럼 바탕이 복잡하면 줄을 놓칠 수 있어요. 그럴 땐 <b>글로 다시 쓰기</b>가 더 정확해요.</p>
+      <h3>글로 다시 쓰기</h3>
+      <p>글자를 직접 붙여 넣거나 이미지에서 읽어 와서 깨끗한 종이에 다시 조판한 뒤 칠해요. 진짜 글자라서 글자·단어·문장 단위로 정확하게 칠할 수 있고, 종이 색과 글꼴도 바꿀 수 있어요.</p>
+      <h3>칠하는 법</h3>
+      <p>드래그하거나, 시작 글자와 끝 글자를 한 번씩 눌러요. 줄이 바뀌어도 이어서 칠해져요. <kbd>1</kbd>~<kbd>6</kbd> 펜 바꾸기 · <kbd>E</kbd> 지우개 · <kbd>Ctrl</kbd>+<kbd>Z</kbd> 되돌리기 · <kbd>Space</kbd> 누르는 동안 원본 보기</p>
+      <button type="submit" class="btn solid">알겠어요</button>
+    </form>
+  </dialog>
+</body>
+</html>
