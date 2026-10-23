@@ -17,6 +17,9 @@
   const pageText = $('#pageText');
   const pageCanvas = $('#pageCanvas');
   const textInput = $('#textInput');
+  const pager = $('#pager');
+  const pagerNum = $('#pagerNum');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   const THICKNESS_LABELS = ['얇게', '보통', '굵게'];
   const UNIT_NAMES = { image: { glyph: '글자', word: '단어', line: '줄' }, text: { glyph: '글자', word: '단어', line: '문장' } };
@@ -25,6 +28,9 @@
 
   const image = { bitmap: null, name: 'image', width: 0, height: 0, layout: null, lum: null, busy: false };
   const text = { raw: '', typeset: false, index: null };
+  // 연 PDF. 쪽마다 칠한 곳·되돌리기·글자 자리를 따로 들고 있고, 그린 그림은 가까운 몇 쪽만 남긴다.
+  const pdfView = { doc: null, count: 0, index: -1, want: -1, pages: [], loading: '' };
+  let pdfTicket = 0;
 
   const modes = {
     image: { marks: [], history: [], pending: null, preview: null },
@@ -179,6 +185,7 @@
   }
 
   function restingHint() {
+    if (mode === 'image' && pdfView.loading) return pdfView.loading;
     if (settings.eraser) return '지우개 · 지울 곳을 드래그하거나 시작과 끝을 눌러요';
     if (mode === 'image') {
       if (image.busy) return '글자 자리를 찾는 중…';
@@ -231,7 +238,7 @@
       }, 30);
     });
     let worker = null;
-    try { worker = new Worker('ink-worker.js?v=20261001-2'); } catch (err) { worker = null; }
+    try { worker = new Worker('ink-worker.js?v=20261024-1'); } catch (err) { worker = null; }
     if (!worker) return direct();
     return new Promise((resolve, reject) => {
       worker.onmessage = (ev) => {
@@ -357,8 +364,11 @@
     }
   }
 
+  const blankEntry = () => ({ canvas: null, layout: null, lum: null, marks: [], history: [] });
+
   async function loadImageFile(file) {
-    if (!file || !/^image\//.test(file.type)) { hint('이미지 파일만 열 수 있어요', 2600); return; }
+    if (isPdf(file)) { openPdf(file); return; }
+    if (!file || !/^image\//.test(file.type)) { hint('이미지나 PDF 파일만 열 수 있어요', 2600); return; }
     let bitmap;
     try {
       bitmap = await createImageBitmap(file);
@@ -366,24 +376,34 @@
       hint('이 이미지는 열 수 없어요. PNG나 JPG로 다시 저장해 보세요', 4000);
       return;
     }
+    closePdf();
     setMode('image');
-    image.bitmap = bitmap;
     image.name = (file.name || 'image').replace(/\.[^.]+$/, '') || 'image';
+    showBitmap(bitmap, blankEntry());
+  }
+
+  // 이미지(또는 PDF 한 쪽)를 캔버스에 올린다. 처음 보는 그림이면 글자 자리를 찾아 entry에 남긴다.
+  async function showBitmap(bitmap, entry) {
+    image.bitmap = bitmap;
     image.width = bitmap.width;
     image.height = bitmap.height;
-    image.layout = null;
-    image.lum = buildLumGrid(bitmap, bitmap.width, bitmap.height);
-    modes.image.marks = [];
-    modes.image.history = [];
+    if (!entry.lum) entry.lum = buildLumGrid(bitmap, bitmap.width, bitmap.height);
+    image.lum = entry.lum;
+    image.layout = entry.layout;
+    modes.image.marks = entry.marks;
+    modes.image.history = entry.history;
     modes.image.pending = null;
+    modes.image.preview = null;
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
     dropzone.hidden = true;
     sheet.hidden = false;
+    image.busy = !entry.layout;
     renderImage();
     updateButtons();
-    image.busy = true;
     refreshHint();
+    if (entry.layout) return;
+    let layout;
     try {
       const maxSide = 2600;
       const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
@@ -395,16 +415,182 @@
       wctx.drawImage(bitmap, 0, 0, w, h);
       const data = wctx.getImageData(0, 0, w, h);
       const result = await runEngine({ data: data.data, width: w, height: h });
-      if (image.bitmap !== bitmap) return; // 그사이 다른 이미지를 열었다
-      image.layout = buildLayout(result, scale);
+      layout = buildLayout(result, scale);
     } catch (err) {
       console.error(err);
-      image.layout = { glyphs: [], words: [], lines: [], medianH: 16 };
+      layout = { glyphs: [], words: [], lines: [], medianH: 16 };
     }
+    entry.layout = layout;
+    if (image.bitmap !== bitmap) return; // 그사이 다른 이미지나 쪽을 열었다
+    image.layout = layout;
     image.busy = false;
     refreshHint();
     renderImage();
     updateButtons();
+  }
+
+  // ---------------------------------------------------------------- PDF
+  // PDF 도구(pdf.js)는 PDF를 열 때만 내려받는다. 한국어 글꼴 표(cmaps)도 같은 곳에서 받는다.
+  const PDFJS_CDNS = [
+    'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/',
+    'https://unpkg.com/pdfjs-dist@4.10.38/',
+  ];
+  let pdfjs = null;
+  let pdfjsBase = '';
+
+  async function ensurePdfjs() {
+    if (pdfjs) return pdfjs;
+    let lastError = null;
+    for (const base of PDFJS_CDNS) {
+      try {
+        const lib = await import(`${base}build/pdf.min.mjs`);
+        lib.GlobalWorkerOptions.workerSrc = `${base}build/pdf.worker.min.mjs`;
+        pdfjs = lib;
+        pdfjsBase = base;
+        return lib;
+      } catch (err) { lastError = err; }
+    }
+    throw lastError || new Error('pdf.js');
+  }
+
+  const isPdf = (file) => !!file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''));
+
+  async function openPdfDoc(file) {
+    const lib = await ensurePdfjs();
+    const data = new Uint8Array(await file.arrayBuffer());
+    return lib.getDocument({
+      data,
+      cMapUrl: `${pdfjsBase}cmaps/`,
+      cMapPacked: true,
+      standardFontDataUrl: `${pdfjsBase}standard_fonts/`,
+      isEvalSupported: false,
+    }).promise;
+  }
+
+  function pdfErrorMessage(err) {
+    const name = err && err.name;
+    if (name === 'PasswordException') return '암호가 걸린 PDF는 열 수 없어요';
+    if (!pdfjs) return 'PDF 도구를 불러오지 못했어요. 인터넷 연결을 확인해 주세요';
+    return '이 PDF는 열 수 없어요. 파일이 깨졌을 수 있어요';
+  }
+
+  // 한 쪽을 가로 약 1800px로 그린다. 아주 큰 쪽은 픽셀 수(약 700만)에 맞춰 줄인다.
+  async function renderPdfPage(doc, number) {
+    const pg = await doc.getPage(number);
+    const base = pg.getViewport({ scale: 1 });
+    let scale = 1800 / base.width;
+    const maxPixels = 7e6;
+    if (base.width * base.height * scale * scale > maxPixels) scale = Math.sqrt(maxPixels / (base.width * base.height));
+    const viewport = pg.getViewport({ scale });
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.floor(viewport.width));
+    c.height = Math.max(1, Math.floor(viewport.height));
+    const cc = c.getContext('2d');
+    cc.fillStyle = '#fff';
+    cc.fillRect(0, 0, c.width, c.height);
+    await pg.render({ canvasContext: cc, viewport }).promise;
+    pg.cleanup();
+    return c;
+  }
+
+  async function openPdf(file) {
+    const ticket = ++pdfTicket;
+    pdfView.loading = 'PDF 여는 중…';
+    hint(pdfView.loading);
+    let doc;
+    try {
+      doc = await openPdfDoc(file);
+    } catch (err) {
+      console.error(err);
+      if (ticket !== pdfTicket) return;
+      pdfView.loading = '';
+      hint(pdfErrorMessage(err), 4000);
+      return;
+    }
+    if (ticket !== pdfTicket) { doc.destroy(); return; } // 그사이 다른 파일을 열었다
+    closePdf();
+    pdfView.doc = doc;
+    pdfView.count = doc.numPages;
+    pdfView.pages = Array.from({ length: doc.numPages }, blankEntry);
+    image.name = (file.name || 'pdf').replace(/\.[^.]+$/, '') || 'pdf';
+    setMode('image');
+    showPdfPage(0);
+  }
+
+  function closePdf() {
+    pdfTicket++;
+    if (pdfView.doc) pdfView.doc.destroy();
+    Object.assign(pdfView, { doc: null, count: 0, index: -1, want: -1, pages: [], loading: '' });
+    updatePager();
+  }
+
+  async function showPdfPage(i, dir = 0) {
+    const P = pdfView;
+    const doc = P.doc;
+    if (!doc || i < 0 || i >= P.count) return;
+    P.want = i;
+    updatePager(dir);
+    const entry = P.pages[i];
+    if (!entry.canvas) {
+      P.loading = P.count > 1 ? `${i + 1}쪽 그리는 중…` : 'PDF 그리는 중…';
+      refreshHint();
+      let pic;
+      try {
+        pic = await renderPdfPage(doc, i + 1);
+      } catch (err) {
+        console.error(err);
+        if (P.doc !== doc || P.want !== i) return;
+        P.loading = '';
+        P.want = P.index;
+        updatePager();
+        hint('이 쪽을 그리지 못했어요', 3000);
+        return;
+      }
+      if (P.doc !== doc) return;
+      entry.canvas = pic;
+      trimPdfCache(i);
+      if (P.want !== i) return; // 그사이 다른 쪽으로 넘겼다
+      P.loading = '';
+    }
+    // 떠나는 쪽의 칠한 곳과 되돌리기를 그 쪽에 맡겨 둔다.
+    if (P.index >= 0 && P.index !== i) {
+      P.pages[P.index].marks = modes.image.marks;
+      P.pages[P.index].history = modes.image.history;
+    }
+    P.index = i;
+    showBitmap(entry.canvas, entry);
+  }
+
+  // 그린 쪽 그림은 지금 쪽에서 가까운 5쪽만 남긴다(글자 자리와 칠한 곳은 모두 남는다).
+  function trimPdfCache(center) {
+    const kept = pdfView.pages.map((p, i) => (p.canvas ? i : -1)).filter((i) => i >= 0);
+    kept.sort((x, y) => Math.abs(y - center) - Math.abs(x - center));
+    while (kept.length > 5) {
+      const far = kept.shift();
+      if (far !== pdfView.index) pdfView.pages[far].canvas = null;
+    }
+  }
+
+  function turnPage(step) {
+    const at = pdfView.want >= 0 ? pdfView.want : pdfView.index;
+    const next = at + step;
+    if (next < 0 || next >= pdfView.count) return;
+    showPdfPage(next, step);
+  }
+
+  function updatePager(dir = 0) {
+    const P = pdfView;
+    const on = P.count > 1;
+    pager.hidden = !on;
+    body.classList.toggle('has-pager', on);
+    if (!on) return;
+    const at = P.want >= 0 ? P.want : P.index;
+    $('#prevPageBtn').disabled = at <= 0;
+    $('#nextPageBtn').disabled = at >= P.count - 1;
+    pagerNum.textContent = `${at + 1} / ${P.count}`;
+    if (dir && pagerNum.animate && !reduceMotion.matches) {
+      pagerNum.animate([{ opacity: 0, transform: `translateX(${dir * 8}px)` }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'ease-out' });
+    }
   }
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -724,7 +910,9 @@
     });
   }
 
+  let ocrProgress = () => {};
   async function ensureOcr(onProgress) {
+    ocrProgress = onProgress; // 엔진은 한 번만 만들어지므로 진행 표시는 부를 때마다 바꿔 끼운다
     if (ocrWorker) return ocrWorker;
     const cdns = [
       { lib: 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js', worker: 'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js', core: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0' },
@@ -737,7 +925,7 @@
         ocrWorker = await window.Tesseract.createWorker(['kor', 'eng'], 1, {
           workerPath: cdn.worker,
           corePath: cdn.core,
-          logger: (msg) => { if (msg && typeof msg.progress === 'number') onProgress(msg); },
+          logger: (msg) => { if (msg && typeof msg.progress === 'number') ocrProgress(msg); },
         });
         return ocrWorker;
       } catch (err) { lastError = err; }
@@ -745,7 +933,93 @@
     throw lastError || new Error('OCR');
   }
 
+  // PDF 한 쪽의 글 조각을 y 위치로 줄로 묶는다. 줄 사이가 크게 벌어지면 빈 줄(문단)로 나눈다.
+  function pdfPageText(content) {
+    const lines = [];
+    let cur = null;
+    for (const it of content.items) {
+      if (typeof it.str !== 'string') continue;
+      if (!it.str) { if (it.hasEOL && cur) cur.eol = true; continue; }
+      const x = it.transform[4];
+      const y = it.transform[5];
+      const h = Math.abs(it.transform[3]) || it.height || 10;
+      const same = cur && !cur.eol && Math.abs(y - cur.y) < Math.max(cur.h, h) * 0.5;
+      if (!same) {
+        cur = { y, h, text: '', end: x, eol: false };
+        lines.push(cur);
+      } else if (x - cur.end > h * 0.2 && !/\s$/.test(cur.text) && !/^\s/.test(it.str)) {
+        cur.text += ' ';
+      }
+      cur.text += it.str;
+      cur.end = x + (it.width || 0);
+      cur.h = Math.max(cur.h, h);
+      if (it.hasEOL) cur.eol = true;
+    }
+    const gaps = [];
+    for (let i = 1; i < lines.length; i++) { const d = lines[i - 1].y - lines[i].y; if (d > 0) gaps.push(d); }
+    gaps.sort((a, b) => a - b);
+    const pitch = gaps.length ? gaps[gaps.length >> 1] : 0;
+    let out = '';
+    lines.forEach((l, i) => {
+      if (i) out += pitch && lines[i - 1].y - l.y > pitch * 1.6 ? '\n\n' : '\n';
+      out += l.text.replace(/\s+$/, '');
+    });
+    return out.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  const cleanOcr = (s) => (s || '').replace(/[ \t]+\n/g, '\n').trim();
+
+  // PDF는 안에 든 글을 그대로 꺼낸다. 글이 없는 쪽(스캔본)만 그림으로 그려 글자를 읽는다.
+  async function importTextFromPdf(file) {
+    const status = $('#ocrStatus');
+    const ocrBtn = $('#ocrBtn');
+    ocrBtn.disabled = true;
+    status.textContent = 'PDF 여는 중…';
+    let doc = null;
+    let step = 'open';
+    try {
+      doc = await openPdfDoc(file);
+      const total = doc.numPages;
+      const parts = [];
+      let usedOcr = false;
+      for (let n = 1; n <= total; n++) {
+        const where = total > 1 ? ` ${n}/${total}쪽` : '';
+        step = 'text';
+        status.textContent = `글 꺼내는 중…${where}`;
+        const pg = await doc.getPage(n);
+        let got = pdfPageText(await pg.getTextContent());
+        if (!got.replace(/\s/g, '')) {
+          usedOcr = true;
+          const pic = await renderPdfPage(doc, n);
+          step = 'ocr';
+          status.textContent = '글자 인식 엔진을 불러오는 중… 처음 한 번은 조금 걸려요';
+          const worker = await ensureOcr((msg) => {
+            const pct = Math.round(msg.progress * 100);
+            status.textContent = msg.status === 'recognizing text' ? `글자 읽는 중…${where} ${pct}%` : `준비 중… ${pct}%`;
+          });
+          const { data } = await worker.recognize(pic);
+          got = cleanOcr(data.text);
+        }
+        if (got) parts.push(got);
+      }
+      const all = parts.join('\n\n');
+      if (!all) { status.textContent = '읽은 글자가 없어요. 직접 붙여 넣어 주세요'; return; }
+      textInput.value = textInput.value.trim() ? `${textInput.value.trim()}\n\n${all}` : all;
+      status.textContent = usedOcr ? '가져왔어요. 틀린 글자를 고친 뒤 종이에 옮겨요' : '가져왔어요. 살펴본 뒤 종이에 옮겨요';
+      textInput.focus();
+    } catch (err) {
+      console.error(err);
+      if (step === 'open') status.textContent = pdfErrorMessage(err);
+      else if (step === 'ocr') status.textContent = '글자 인식 엔진을 불러오지 못했어요. 인터넷 연결을 확인해 주세요';
+      else status.textContent = '이 PDF에서 글을 가져오지 못했어요';
+    } finally {
+      if (doc) doc.destroy();
+      ocrBtn.disabled = false;
+    }
+  }
+
   async function importTextFromImage(file) {
+    if (isPdf(file)) return importTextFromPdf(file);
     const status = $('#ocrStatus');
     const ocrBtn = $('#ocrBtn');
     ocrBtn.disabled = true;
@@ -796,7 +1070,8 @@
     const blob = await toBlob(await currentCanvas());
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `형광펜-${mode === 'image' ? image.name : '글'}.png`;
+    const pageNo = mode === 'image' && pdfView.count > 1 ? `-${pdfView.index + 1}쪽` : '';
+    a.download = `형광펜-${mode === 'image' ? image.name + pageNo : '글'}.png`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -965,10 +1240,13 @@
     if (f) importTextFromImage(f);
   });
 
-  // 붙여넣기: 이미지면 이미지 모드로 연다.
+  $('#prevPageBtn').addEventListener('click', () => turnPage(-1));
+  $('#nextPageBtn').addEventListener('click', () => turnPage(1));
+
+  // 붙여넣기: 이미지(또는 PDF)면 이미지 모드로 연다.
   document.addEventListener('paste', (e) => {
     const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
-    const img = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'));
+    const img = items.find((it) => it.kind === 'file' && (it.type.startsWith('image/') || it.type === 'application/pdf'));
     if (img) {
       e.preventDefault();
       if (mode === 'text' && !text.typeset) importTextFromImage(img.getAsFile());
@@ -1004,6 +1282,9 @@
     } else if (e.key === ' ' && mode === 'image' && image.bitmap && !e.repeat) {
       e.preventDefault();
       setOriginal(true);
+    } else if (mode === 'image' && pdfView.count > 1 && /^(ArrowLeft|ArrowRight|PageUp|PageDown)$/.test(e.key)) {
+      e.preventDefault();
+      turnPage(e.key === 'ArrowRight' || e.key === 'PageDown' ? 1 : -1);
     } else if (e.key === 'Escape') {
       modes[mode].pending = null;
       refreshHint();
@@ -1015,6 +1296,9 @@
   });
 
   new ResizeObserver(() => { if (mode === 'text') renderPage(); }).observe(page);
+  // 좁은 화면에서는 필통이 아래에 붙어 있으므로, 쪽 넘기기 알약을 그 위에 띄운다.
+  const tray = $('.tray');
+  new ResizeObserver(() => body.style.setProperty('--tray-h', `${tray.offsetHeight}px`)).observe(tray);
   if (document.fonts) document.fonts.addEventListener('loadingdone', () => { if (mode === 'text') renderPage(); });
 
   updateButtons();

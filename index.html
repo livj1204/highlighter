@@ -10,9 +10,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Do+Hyeon&family=Gowun+Batang:wght@400;700&family=Gowun+Dodum&display=swap">
-  <link rel="stylesheet" href="styles.css?v=20261001-3">
-  <script src="ink.js?v=20261001-2" defer></script>
-  <script src="app.js?v=20261001-2" defer></script>
+  <link rel="stylesheet" href="styles.css?v=20261024-1">
+  <script src="ink.js?v=20261024-1" defer></script>
+  <script src="app.js?v=20261024-1" defer></script>
 </head>
 <body data-mode="image">
   <header class="topbar">
@@ -42,15 +42,21 @@
         <div class="dropzone" id="dropzone">
           <div class="drop-card">
             <p class="drop-title">칠할 이미지를 가져와요</p>
-            <p class="drop-sub">스크린샷, 캡처, 문서 사진 모두 돼요</p>
+            <p class="drop-sub">스크린샷, 캡처, 문서 사진, PDF 모두 돼요</p>
             <button type="button" class="btn solid" id="pickBtn">이미지 고르기</button>
             <p class="drop-note">끌어다 놓거나 <kbd>Ctrl</kbd>+<kbd>V</kbd>로 붙여 넣어도 돼요</p>
           </div>
-          <input type="file" id="fileInput" accept="image/*" hidden>
+          <input type="file" id="fileInput" accept="image/*,application/pdf,.pdf" hidden>
         </div>
         <div class="sheet" id="sheet" hidden>
           <canvas id="canvas" aria-label="형광펜을 칠할 이미지"></canvas>
         </div>
+      </div>
+
+      <div class="pager image-only" id="pager" role="group" aria-label="쪽 넘기기" hidden>
+        <button type="button" id="prevPageBtn" aria-label="이전 쪽"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4L6 9l5 5"/></svg></button>
+        <span class="pager-num" id="pagerNum">1 / 1</span>
+        <button type="button" id="nextPageBtn" aria-label="다음 쪽"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4l5 5-5 5"/></svg></button>
       </div>
 
       <div class="text-view" id="textView" hidden>
@@ -59,7 +65,7 @@
           <textarea id="textInput" rows="12" placeholder="여기에 글을 붙여 넣어요. 빈 줄로 문단을 나눌 수 있어요."></textarea>
           <div class="compose-actions">
             <button type="button" class="btn ghost" id="ocrBtn">이미지에서 글 가져오기</button>
-            <input type="file" id="ocrFile" accept="image/*" hidden>
+            <input type="file" id="ocrFile" accept="image/*,application/pdf,.pdf" hidden>
             <button type="button" class="btn solid" id="typesetBtn">종이에 옮기기</button>
           </div>
           <p class="ocr-status" id="ocrStatus" aria-live="polite"></p>
@@ -151,8 +157,9 @@
       <h3>이미지에 칠하기</h3>
       <p>스크린샷을 그대로 두고 그 위에 칠해요. 글자를 읽지 않고, 배경과 다른 가는 획이 모인 자리를 찾아 글줄·단어·글자 위치를 알아내요. 그래서 한국어·영어·말풍선 속 흰 글자까지 빠르게 잡혀요.</p>
       <p>조명이 고르지 않은 사진처럼 바탕이 복잡하면 줄을 놓칠 수 있어요. 그럴 땐 <b>글로 다시 쓰기</b>가 더 정확해요.</p>
+      <p>PDF도 열 수 있어요. 쪽마다 따로 칠해지고, 아래 ‹ › 단추나 <kbd>←</kbd> <kbd>→</kbd>로 쪽을 넘겨요. 저장하면 지금 보는 쪽이 PNG가 돼요.</p>
       <h3>글로 다시 쓰기</h3>
-      <p>글자를 직접 붙여 넣거나 이미지에서 읽어 와서 깨끗한 종이에 다시 조판한 뒤 칠해요. 진짜 글자라서 글자·단어·문장 단위로 정확하게 칠할 수 있고, 종이 색과 글꼴도 바꿀 수 있어요.</p>
+      <p>글자를 직접 붙여 넣거나 이미지에서 읽어 와서 깨끗한 종이에 다시 조판한 뒤 칠해요. 진짜 글자라서 글자·단어·문장 단위로 정확하게 칠할 수 있고, 종이 색과 글꼴도 바꿀 수 있어요. PDF를 고르면 안에 든 글을 그대로 가져오고, 스캔한 쪽만 글자를 읽어요.</p>
       <h3>칠하는 법</h3>
       <p>드래그하거나, 시작 글자와 끝 글자를 한 번씩 눌러요. 줄이 바뀌어도 이어서 칠해져요. <kbd>1</kbd>~<kbd>6</kbd> 펜 바꾸기 · <kbd>E</kbd> 지우개 · <kbd>Ctrl</kbd>+<kbd>Z</kbd> 되돌리기 · <kbd>Space</kbd> 누르는 동안 원본 보기</p>
       <button type="submit" class="btn solid">알겠어요</button>
